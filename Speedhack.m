@@ -9,6 +9,15 @@
 #import <mach-o/loader.h>
 #import <mach-o/nlist.h>
 
+// Định nghĩa macro bị thiếu cho Mach-O header
+#ifndef LC_SEGMENT_ARCH_DEPENDENT
+#ifdef __LP64__
+#define LC_SEGMENT_ARCH_DEPENDENT LC_SEGMENT_64
+#else
+#define LC_SEGMENT_ARCH_DEPENDENT LC_SEGMENT
+#endif
+#endif
+
 // ==========================================
 // 1. EMBEDDED FISHHOOK IMPLEMENTATION
 // ==========================================
