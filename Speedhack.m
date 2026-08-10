@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 #import <sys/time.h>
 #import <CoreFoundation/CoreFoundation.h>
+#import <objc/runtime.h>
+#import <mach/mach_time.h>
 #import <dlfcn.h>
 #import <stdlib.h>
 #import <string.h>
@@ -9,7 +11,6 @@
 #import <mach-o/loader.h>
 #import <mach-o/nlist.h>
 
-// Định nghĩa macro bị thiếu cho Mach-O header
 #ifndef LC_SEGMENT_ARCH_DEPENDENT
 #ifdef __LP64__
 #define LC_SEGMENT_ARCH_DEPENDENT LC_SEGMENT_64
@@ -94,9 +95,7 @@ static void rebind_symbols_for_image(struct rebindings_entry *rebindings,
                                      const struct mach_header *header,
                                      intptr_t slide) {
   Dl_info info;
-  if (dladdr(header, &info) == 0) {
-    return;
-  }
+  if (dladdr(header, &info) == 0) return;
 
   segment_command_t *cur_seg_cmd;
   segment_command_t *linkedit_segment = NULL;
@@ -117,9 +116,7 @@ static void rebind_symbols_for_image(struct rebindings_entry *rebindings,
     }
   }
 
-  if (!symtab_cmd || !dysymtab_cmd || !linkedit_segment) {
-    return;
-  }
+  if (!symtab_cmd || !dysymtab_cmd || !linkedit_segment) return;
 
   uintptr_t linkedit_base = (uintptr_t)slide + linkedit_segment->vmaddr - linkedit_segment->fileoff;
   nlist_t *symtab = (nlist_t *)(linkedit_base + symtab_cmd->symoff);
@@ -135,8 +132,7 @@ static void rebind_symbols_for_image(struct rebindings_entry *rebindings,
         continue;
       }
       for (uint32_t j = 0; j < cur_seg_cmd->nsects; j++) {
-        section_t *sect =
-          (section_t *)(cur + sizeof(segment_command_t)) + j;
+        section_t *sect = (section_t *)(cur + sizeof(segment_command_t)) + j;
         if ((sect->flags & SECTION_TYPE) == S_LAZY_SYMBOL_POINTERS ||
             (sect->flags & SECTION_TYPE) == S_NON_LAZY_SYMBOL_POINTERS) {
           perform_rebinding_with_section(rebindings, sect, slide, symtab, strtab, indirect_symtab);
@@ -175,18 +171,26 @@ static int rebind_symbols(struct rebinding rebindings[], size_t rebindings_nel) 
 }
 
 // ==========================================
-// 2. SPEEDHACK HOOK LOGIC
+// 2. CORE SPEEDHACK ENGINE (UNIFIED TIMING)
 // ==========================================
-static float speed_factor = 5.0f; // Hệ số tốc độ (Ví dụ x5)
+static float speed_factor = 5.0f; // Hệ số tốc độ x5
 
+// Original C Function Pointers
 static int (*orig_gettimeofday)(struct timeval *tv, struct timezone *tz);
 static CFAbsoluteTime (*orig_CFAbsoluteTimeGetCurrent)(void);
+static uint64_t (*orig_mach_absolute_time)(void);
 
+// Time Sync Trackers
 static struct timeval last_real_tv;
 static struct timeval fake_tv;
+
 static CFAbsoluteTime last_real_cf = 0;
 static CFAbsoluteTime fake_cf = 0;
 
+static uint64_t last_real_mach = 0;
+static uint64_t fake_mach = 0;
+
+// 1. Hook gettimeofday
 int my_gettimeofday(struct timeval *tv, struct timezone *tz) {
     int ret = orig_gettimeofday(tv, tz);
     if (ret != 0 || tv == NULL) return ret;
@@ -208,7 +212,6 @@ int my_gettimeofday(struct timeval *tv, struct timezone *tz) {
             fake_tv.tv_sec += 1;
             fake_tv.tv_usec -= 1000000;
         }
-        
         last_real_tv = *tv;
     }
 
@@ -216,6 +219,7 @@ int my_gettimeofday(struct timeval *tv, struct timezone *tz) {
     return ret;
 }
 
+// 2. Hook CFAbsoluteTimeGetCurrent
 CFAbsoluteTime my_CFAbsoluteTimeGetCurrent(void) {
     CFAbsoluteTime real_now = orig_CFAbsoluteTimeGetCurrent();
     if (last_real_cf == 0) {
@@ -229,11 +233,63 @@ CFAbsoluteTime my_CFAbsoluteTimeGetCurrent(void) {
     return fake_cf;
 }
 
+// 3. Hook mach_absolute_time (Dành cho game loop / Unity / Low level timers)
+uint64_t my_mach_absolute_time(void) {
+    uint64_t real_now = orig_mach_absolute_time();
+    if (last_real_mach == 0) {
+        last_real_mach = real_now;
+        fake_mach = real_now;
+    } else {
+        uint64_t delta = real_now - last_real_mach;
+        fake_mach += (uint64_t)(delta * speed_factor);
+        last_real_mach = real_now;
+    }
+    return fake_mach;
+}
+
+// ==========================================
+// 3. OPTIMIZED OBJECTIVE-C HOOKS (NSDate)
+// ==========================================
+
+static id (*orig_NSDate_init)(id self, SEL _cmd);
+static id (*orig_NSDate_initWithTimeIntervalSinceReferenceDate)(id self, SEL _cmd, NSTimeInterval ti);
+
+static id my_NSDate_init(id self, SEL _cmd) {
+    return orig_NSDate_initWithTimeIntervalSinceReferenceDate(self, @selector(initWithTimeIntervalSinceReferenceDate:), my_CFAbsoluteTimeGetCurrent());
+}
+
+static void swizzle_NSDate_methods(void) {
+    Class nsdateClass = [NSDate class];
+    
+    // Swizzle +[NSDate timeIntervalSinceReferenceDate]
+    Method origRefMethod = class_getClassMethod(nsdateClass, @selector(timeIntervalSinceReferenceDate));
+    if (origRefMethod) {
+        method_setImplementation(origRefMethod, (IMP)my_CFAbsoluteTimeGetCurrent);
+    }
+    
+    // Swizzle +[NSDate date]
+    Method origDateMethod = class_getClassMethod(nsdateClass, @selector(date));
+    if (origDateMethod) {
+        IMP newDateImp = imp_implementationWithBlock(^id(id self) {
+            return [NSDate dateWithTimeIntervalSinceReferenceDate:my_CFAbsoluteTimeGetCurrent()];
+        });
+        method_setImplementation(origDateMethod, newDateImp);
+    }
+}
+
+// ==========================================
+// 4. INITIALIZER
+// ==========================================
 __attribute__((constructor))
 static void initialize(void) {
+    // Rebind C Functions via Fishhook
     struct rebinding rebindings[] = {
         {"gettimeofday", (void *)my_gettimeofday, (void **)&orig_gettimeofday},
-        {"CFAbsoluteTimeGetCurrent", (void *)my_CFAbsoluteTimeGetCurrent, (void **)&orig_CFAbsoluteTimeGetCurrent}
+        {"CFAbsoluteTimeGetCurrent", (void *)my_CFAbsoluteTimeGetCurrent, (void **)&orig_CFAbsoluteTimeGetCurrent},
+        {"mach_absolute_time", (void *)my_mach_absolute_time, (void **)&orig_mach_absolute_time}
     };
-    rebind_symbols(rebindings, 2);
+    rebind_symbols(rebindings, 3);
+    
+    // Apply Objective-C Swizzling for NSDate
+    swizzle_NSDate_methods();
 }
