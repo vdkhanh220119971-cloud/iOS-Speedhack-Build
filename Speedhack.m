@@ -68,7 +68,7 @@ CFAbsoluteTime my_CFAbsoluteTimeGetCurrent(void) {
 __attribute__((constructor))
 static void initialize() {
     // Dùng fishhook để rebind symbol
-    rebind_symbols((struct rebind[2]){
+    rebind_symbols((struct rebinding[2]){
         {"gettimeofday", my_gettimeofday, (void *)&orig_gettimeofday},
         {"CFAbsoluteTimeGetCurrent", my_CFAbsoluteTimeGetCurrent, (void *)&orig_CFAbsoluteTimeGetCurrent}
     }, 2);
