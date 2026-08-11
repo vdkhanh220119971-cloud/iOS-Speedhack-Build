@@ -1,5 +1,5 @@
 name: Build Speedhack Dylib
- 
+  
 on:
   push:
     branches: [ "main", "master" ]
