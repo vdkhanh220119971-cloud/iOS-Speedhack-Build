@@ -1,29 +1,33 @@
-name: Build iOS Dylib
+name: Build Speedhack Dylib
 
 on:
   push:
     branches: [ "main", "master" ]
-  workflow_dispatch:
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch: # Cho phép bấm nút "Run workflow" thủ công trên GitHub
 
 jobs:
   build:
-    runs-on: macos-14
-  
+    runs-on: macos-latest
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Compile Dylib with Clang
-      run: |
-        clang -dynamiclib \
-        -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
-        -arch arm64 \
-        Speedhack.m \
-        -framework Foundation -framework CoreFoundation \
-        -o Speedhack.dylib
+      - name: Compile Dylib with Clang
+        run: |
+          clang -dynamiclib \
+            -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
+            -arch arm64 \
+            Speedhack.m \
+            -framework Foundation \
+            -framework CoreFoundation \
+            -framework UIKit \
+            -o Speedhack.dylib
 
-    - name: Upload Dylib Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: Speedhack-Dylib
-        path: Speedhack.dylib
+      - name: Upload Dylib Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speedhack-arm64
+          path: Speedhack.dylib
