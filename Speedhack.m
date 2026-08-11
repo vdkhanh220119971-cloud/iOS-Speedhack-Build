@@ -1,4 +1,3 @@
-#import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <sys/time.h>
 #import <CoreFoundation/CoreFoundation.h>
@@ -172,14 +171,16 @@ static int rebind_symbols(struct rebinding rebindings[], size_t rebindings_nel) 
 }
 
 // ==========================================
-// 2. SPEED CONTROL STATE
+// 2. CORE SPEEDHACK ENGINE (UNIFIED TIMING)
 // ==========================================
-static float speed_factor = 2.0f; // Hệ số tốc độ mặc định
+static float speed_factor = 5.0f; // Hệ số tốc độ x5
 
+// Original C Function Pointers
 static int (*orig_gettimeofday)(struct timeval *tv, struct timezone *tz);
 static CFAbsoluteTime (*orig_CFAbsoluteTimeGetCurrent)(void);
 static uint64_t (*orig_mach_absolute_time)(void);
 
+// Time Sync Trackers
 static struct timeval last_real_tv;
 static struct timeval fake_tv;
 
@@ -189,6 +190,7 @@ static CFAbsoluteTime fake_cf = 0;
 static uint64_t last_real_mach = 0;
 static uint64_t fake_mach = 0;
 
+// 1. Hook gettimeofday
 int my_gettimeofday(struct timeval *tv, struct timezone *tz) {
     int ret = orig_gettimeofday(tv, tz);
     if (ret != 0 || tv == NULL) return ret;
@@ -217,6 +219,7 @@ int my_gettimeofday(struct timeval *tv, struct timezone *tz) {
     return ret;
 }
 
+// 2. Hook CFAbsoluteTimeGetCurrent
 CFAbsoluteTime my_CFAbsoluteTimeGetCurrent(void) {
     CFAbsoluteTime real_now = orig_CFAbsoluteTimeGetCurrent();
     if (last_real_cf == 0) {
@@ -230,6 +233,7 @@ CFAbsoluteTime my_CFAbsoluteTimeGetCurrent(void) {
     return fake_cf;
 }
 
+// 3. Hook mach_absolute_time (Dành cho game loop / Unity / Low level timers)
 uint64_t my_mach_absolute_time(void) {
     uint64_t real_now = orig_mach_absolute_time();
     if (last_real_mach == 0) {
@@ -243,12 +247,27 @@ uint64_t my_mach_absolute_time(void) {
     return fake_mach;
 }
 
+// ==========================================
+// 3. OPTIMIZED OBJECTIVE-C HOOKS (NSDate)
+// ==========================================
+
+static id (*orig_NSDate_init)(id self, SEL _cmd);
+static id (*orig_NSDate_initWithTimeIntervalSinceReferenceDate)(id self, SEL _cmd, NSTimeInterval ti);
+
+static id my_NSDate_init(id self, SEL _cmd) {
+    return orig_NSDate_initWithTimeIntervalSinceReferenceDate(self, @selector(initWithTimeIntervalSinceReferenceDate:), my_CFAbsoluteTimeGetCurrent());
+}
+
 static void swizzle_NSDate_methods(void) {
     Class nsdateClass = [NSDate class];
+    
+    // Swizzle +[NSDate timeIntervalSinceReferenceDate]
     Method origRefMethod = class_getClassMethod(nsdateClass, @selector(timeIntervalSinceReferenceDate));
     if (origRefMethod) {
         method_setImplementation(origRefMethod, (IMP)my_CFAbsoluteTimeGetCurrent);
     }
+    
+    // Swizzle +[NSDate date]
     Method origDateMethod = class_getClassMethod(nsdateClass, @selector(date));
     if (origDateMethod) {
         IMP newDateImp = imp_implementationWithBlock(^id(id self) {
@@ -259,214 +278,18 @@ static void swizzle_NSDate_methods(void) {
 }
 
 // ==========================================
-// 3. PASSTHROUGH OVERLAY WINDOW
-// ==========================================
-@interface SpeedhackPassthroughWindow : UIWindow
-@property (nonatomic, weak) UIView *gearButton;
-@property (nonatomic, weak) UIView *menuView;
-@end
-
-@implementation SpeedhackPassthroughWindow
-
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    if (self.gearButton && !self.gearButton.hidden) {
-        CGPoint buttonPoint = [self.gearButton convertPoint:point fromView:self];
-        if ([self.gearButton pointInside:buttonPoint withEvent:event]) {
-            return [super hitTest:point withEvent:event];
-        }
-    }
-    
-    if (self.menuView && !self.menuView.hidden) {
-        CGPoint menuPoint = [self.menuView convertPoint:point fromView:self];
-        if ([self.menuView pointInside:menuPoint withEvent:event]) {
-            return [super hitTest:point withEvent:event];
-        }
-    }
-    
-    return nil;
-}
-
-@end
-
-// ==========================================
-// 4. OVERLAY UI MANAGEMENT
-// ==========================================
-@interface SpeedhackUI : NSObject
-@property (nonatomic, strong) SpeedhackPassthroughWindow *overlayWindow;
-@property (nonatomic, strong) UIButton *gearButton;
-@property (nonatomic, strong) UIView *menuView;
-@property (nonatomic, strong) UILabel *speedLabel;
-@property (nonatomic, strong) UISlider *speedSlider;
-@property (nonatomic, strong) NSTimer *idleTimer;
-+ (instancetype)sharedInstance;
-- (void)setupUI;
-@end
-
-@implementation SpeedhackUI
-
-+ (instancetype)sharedInstance {
-    static SpeedhackUI *instance = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        instance = [[SpeedhackUI alloc] init];
-    });
-    return instance;
-}
-
-- (void)setupUI {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (self.overlayWindow) return;
-
-        CGRect screenBounds = [UIScreen mainScreen].bounds;
-
-        self.overlayWindow = [[SpeedhackPassthroughWindow alloc] initWithFrame:screenBounds];
-        self.overlayWindow.windowLevel = UIWindowLevelStatusBar + 99999;
-        self.overlayWindow.backgroundColor = [UIColor clearColor];
-
-        UIViewController *rootVC = [[UIViewController alloc] init];
-        rootVC.view.backgroundColor = [UIColor clearColor];
-        
-        self.overlayWindow.rootViewController = rootVC;
-        self.overlayWindow.hidden = NO;
-
-        // 1. Nút Bánh xe ⚙️
-        self.gearButton = [UIButton buttonWithType:UIButtonTypeCustom];
-        self.gearButton.frame = CGRectMake(20, 150, 50, 50);
-        self.gearButton.layer.cornerRadius = 25;
-        self.gearButton.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.1 alpha:0.9];
-        self.gearButton.layer.borderWidth = 2.0;
-        self.gearButton.layer.borderColor = [UIColor colorWithRed:0.2 green:0.8 blue:0.4 alpha:1.0].CGColor;
-        [self.gearButton setTitle:@"⚙️" forState:UIControlStateNormal];
-        self.gearButton.titleLabel.font = [UIFont systemFontOfSize:28];
-        self.gearButton.clipsToBounds = YES;
-
-        UIPanGestureRecognizer *panGesture = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
-        [self.gearButton addGestureRecognizer:panGesture];
-        [self.gearButton addTarget:self action:@selector(gearButtonClicked) forControlEvents:UIControlEventTouchUpInside];
-        [rootVC.view addSubview:self.gearButton];
-
-        // 2. Menu Điều Chỉnh gọn nhẹ
-        self.menuView = [[UIView alloc] initWithFrame:CGRectMake((screenBounds.size.width - 250) / 2, (screenBounds.size.height - 150) / 2, 250, 150)];
-        self.menuView.backgroundColor = [UIColor colorWithRed:0.12 green:0.12 blue:0.14 alpha:0.98];
-        self.menuView.layer.cornerRadius = 16;
-        self.menuView.layer.borderWidth = 1.5;
-        self.menuView.layer.borderColor = [UIColor colorWithRed:0.2 green:0.8 blue:0.4 alpha:0.8].CGColor;
-        self.menuView.hidden = YES;
-
-        UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 12, 230, 24)];
-        titleLabel.text = @"⚡ Speedhack Menu";
-        titleLabel.textColor = [UIColor whiteColor];
-        titleLabel.font = [UIFont boldSystemFontOfSize:16];
-        titleLabel.textAlignment = NSTextAlignmentCenter;
-        [self.menuView addSubview:titleLabel];
-
-        // Hiển thị tốc độ
-        self.speedLabel = [[UILabel alloc] initWithFrame:CGRectMake(15, 45, 220, 20)];
-        self.speedLabel.text = [NSString stringWithFormat:@"Hệ số tốc độ: %.1fx", speed_factor];
-        self.speedLabel.textColor = [UIColor colorWithRed:0.2 green:0.8 blue:1.0 alpha:1.0];
-        self.speedLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
-        [self.menuView addSubview:self.speedLabel];
-
-        // Thanh kéo tốc độ (Slider)
-        self.speedSlider = [[UISlider alloc] initWithFrame:CGRectMake(15, 70, 220, 30)];
-        self.speedSlider.minimumValue = 0.5f;
-        self.speedSlider.maximumValue = 20.0f;
-        self.speedSlider.value = speed_factor;
-        self.speedSlider.tintColor = [UIColor colorWithRed:0.2 green:0.8 blue:0.4 alpha:1.0];
-        [self.speedSlider addTarget:self action:@selector(sliderValueChanged:) forControlEvents:UIControlEventValueChanged];
-        [self.menuView addSubview:self.speedSlider];
-
-        // Nút Đóng Menu
-        UIButton *closeButton = [UIButton buttonWithType:UIButtonTypeSystem];
-        closeButton.frame = CGRectMake(15, 110, 220, 30);
-        closeButton.backgroundColor = [UIColor colorWithWhite:0.25 alpha:0.8];
-        closeButton.layer.cornerRadius = 8;
-        [closeButton setTitle:@"Đóng Menu" forState:UIControlStateNormal];
-        [closeButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        closeButton.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightBold];
-        [closeButton addTarget:self action:@selector(toggleMenu) forControlEvents:UIControlEventTouchUpInside];
-        [self.menuView addSubview:closeButton];
-
-        [rootVC.view addSubview:self.menuView];
-
-        self.overlayWindow.gearButton = self.gearButton;
-        self.overlayWindow.menuView = self.menuView;
-
-        [self resetIdleTimer];
-    });
-}
-
-- (void)sliderValueChanged:(UISlider *)slider {
-    [self resetIdleTimer];
-    speed_factor = slider.value;
-    self.speedLabel.text = [NSString stringWithFormat:@"Hệ số tốc độ: %.1fx", speed_factor];
-}
-
-- (void)resetIdleTimer {
-    [self.idleTimer invalidate];
-    [UIView animateWithDuration:0.2 animations:^{
-        self.gearButton.alpha = 1.0f;
-    }];
-    self.idleTimer = [NSTimer scheduledTimerWithTimeInterval:5.0
-                                                      target:self
-                                                    selector:@selector(fadeGearButton)
-                                                    userInfo:nil
-                                                     repeats:NO];
-}
-
-- (void)fadeGearButton {
-    if (!self.menuView.hidden) return;
-    [UIView animateWithDuration:0.5 animations:^{
-        self.gearButton.alpha = 0.15f;
-    }];
-}
-
-- (void)gearButtonClicked {
-    [self resetIdleTimer];
-    [self toggleMenu];
-}
-
-- (void)handlePan:(UIPanGestureRecognizer *)pan {
-    [self resetIdleTimer];
-    CGPoint translation = [pan translationInView:self.overlayWindow];
-    CGPoint newCenter = CGPointMake(pan.view.center.x + translation.x, pan.view.center.y + translation.y);
-    CGRect screenRect = [UIScreen mainScreen].bounds;
-    newCenter.x = MIN(MAX(newCenter.x, 25), screenRect.size.width - 25);
-    newCenter.y = MIN(MAX(newCenter.y, 25), screenRect.size.height - 25);
-    pan.view.center = newCenter;
-    [pan setTranslation:CGPointZero inView:self.overlayWindow];
-}
-
-- (void)toggleMenu {
-    [self resetIdleTimer];
-    self.menuView.hidden = !self.menuView.hidden;
-}
-
-@end
-
-// ==========================================
-// 5. INITIALIZER
+// 4. INITIALIZER
 // ==========================================
 __attribute__((constructor))
 static void initialize(void) {
+    // Rebind C Functions via Fishhook
     struct rebinding rebindings[] = {
         {"gettimeofday", (void *)my_gettimeofday, (void **)&orig_gettimeofday},
         {"CFAbsoluteTimeGetCurrent", (void *)my_CFAbsoluteTimeGetCurrent, (void **)&orig_CFAbsoluteTimeGetCurrent},
         {"mach_absolute_time", (void *)my_mach_absolute_time, (void **)&orig_mach_absolute_time}
     };
     rebind_symbols(rebindings, 3);
+    
+    // Apply Objective-C Swizzling for NSDate
     swizzle_NSDate_methods();
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [[SpeedhackUI sharedInstance] setupUI];
-    });
-
-    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
-                                                      object:nil
-                                                       queue:[NSOperationQueue mainQueue]
-                                                  usingBlock:^(NSNotification * _Nonnull note) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [[SpeedhackUI sharedInstance] setupUI];
-        });
-    }];
 }
