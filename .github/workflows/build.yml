@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch: # Cho phép bấm nút "Run workflow" thủ công trên GitHub
-
+   
 jobs:
   build:
     runs-on: macos-latest
