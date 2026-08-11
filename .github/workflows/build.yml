@@ -1,12 +1,12 @@
 name: Build Speedhack Dylib
-  
+
 on:
   push:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch: # Cho phép bấm nút "Run workflow" thủ công trên GitHub
-   
+  workflow_dispatch:
+
 jobs:
   build:
     runs-on: macos-latest
@@ -20,10 +20,12 @@ jobs:
           clang -dynamiclib \
             -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
             -arch arm64 \
+            -Wno-deprecated-declarations \
             Speedhack.m \
             -framework Foundation \
             -framework CoreFoundation \
             -framework UIKit \
+            -framework CoreGraphics \
             -o Speedhack.dylib
 
       - name: Upload Dylib Artifact
