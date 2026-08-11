@@ -13,7 +13,7 @@
 #import <mach-o/nlist.h>
 
 #ifndef LC_SEGMENT_ARCH_DEPENDENT
-#ifdef __LP64__
+#ifdef __LP64__ 
 #define LC_SEGMENT_ARCH_DEPENDENT LC_SEGMENT_64
 #else
 #define LC_SEGMENT_ARCH_DEPENDENT LC_SEGMENT
